@@ -1,65 +1,111 @@
 # MandiMitra 🌾
 
-**A transparent market-choice assistant for perishable produce.**
+**An open-source decision-support prototype that ranks nearby mandis by estimated net proceeds (price minus transport minus assumed loss) and backtests whether that ranking would have beaten simple rules.**
 
-MandiMitra explores whether combining historical mandi prices with transport and perishability assumptions can make market choices easier to compare for small-scale produce sellers. It is a hackathon prototype and has not been validated with farmers or live market data.
+Hackathon prototype for *Commit for Good* (Manipal University Jaipur, 9–11 Oct 2026), domain: AI for Resilient and Sustainable Supply Chains. It has **not** been validated with farmers or live market data.
 
-## Current status
-- Runnable Streamlit prototype
-- CSV upload with schema validation
-- Moving-average price estimate per market
-- Transparent estimated net-return calculation
-- Comparison with highest-latest-price and nearest-market baselines
-- Chronological forecast sanity check against a last-observation baseline
-- Synthetic offline demo data, clearly labelled
+## The problem (hypothesis, still to be validated)
+A seller of perishable produce who can reach several mandis sees quoted prices but not what each market would leave after transport and transit loss. A higher quote may not mean higher earnings. This is a hypothesis to test through interviews and real price data; this prototype does not show that market choice is a major cause of post-harvest loss.
+Context: the NABCONS 2022 study (via MoFPI/PIB) estimates vegetable post-harvest losses at 4.87–11.61% overall. These are sector-level figures, not MandiMitra results, and they are not about market choice. See Research sources.
 
-## Quick start
+## What it does
+- **Input:** a CSV of historical mandi prices (`date, market, commodity, modal_price_rs_per_quintal, arrivals_tonnes`, plus `distance_km` or market `latitude`/`longitude`), a lot size, and cost/loss assumptions.
+- **Output:**
+  1. a ranking of fresh markets by estimated net return, with each market's *break-even price* versus the nearest market;
+  2. a **decision backtest**: on every historical day, each strategy picks a market using only earlier data and is scored on the next price actually observed;
+  3. a sensitivity table showing whether the conclusion survives different transport and loss assumptions;
+  4. forecast checks against simple baselines, including whether arrivals data add any predictive signal.
 
+## Example
+Run on the bundled **SYNTHETIC** demo data (so these numbers describe the data generator, not the world; output excerpted, columns trimmed):
+
+```
+$ python backtest.py --sensitivity
+Data: data/sample/demo_prices.csv (SYNTHETIC)
+Assumptions: 1000 kg of Tomato, Rs 18/km/truck, 2% loss per 100 km, truck 10000 kg, round trip: False
+
+=== Forecast used by the net-return strategy: 7-observation moving average
+                                 label  mean_realised_net_rs  mean_regret_rs  mean_gain_vs_nearest_rs  ci_low  ci_high
+MandiMitra (best estimated net return)               19113.8           136.8                    270.9    77.9    461.7
+                        Nearest market               18842.9           407.7                      0.0     0.0      0.0
+           Highest latest quoted price               18936.9           313.7                     94.0  -172.2    367.0
+Highest forecast price (ignores costs)               18810.6           440.0                    -32.3  -366.6    286.2
+days scored: 166, skipped: 14; net-return pick differs from nearest on 63% of days
+...
+=== One-step-ahead price forecast check (RMSE, Rs/quintal)
+moving average 33.92 vs last value 21.33 -> moving average beats last value: False
+```
+
+Reading it honestly: on this synthetic history the net-return pick beat "nearest" by about ₹271 per lot on average (95% block-bootstrap interval ₹78 to ₹462), but a moving average forecasts *worse* than simply using the last price, and the advantage disappears when transport is assumed expensive (see the sensitivity table: at ₹27/km and 4% loss per 100 km the gain is about −₹11 with an interval spanning zero). The demo data were built to contain days where the far market wins and days where the near one does, so a positive result here shows the machinery works, not that real mandis behave this way.
+
+## How it works
+1. **Validate** the CSV (drop bad rows, merge several varieties of the same market and day, flag synthetic data).
+2. **Forecast** each market's price from observations dated on or before the decision day: trailing moving average (default 7 observations) or last observed price. Markets silent for more than 7 days are excluded.
+3. **Net return** = forecast × quantity − transport (distance × ₹/km × trucks × legs) − assumed loss (linear in distance, capped at 100%). One shared cost function is used for both the ranking and the backtest.
+4. **Rank**, add each market's break-even price against the nearest market, and show all inputs.
+5. **Backtest** four strategies (net return, nearest, highest latest price, highest forecast price) day by day, scoring each on the next observed price; report mean gain vs nearest with a block-bootstrap interval, and re-run over a grid of cost assumptions.
+6. **Check forecasts:** walk-forward RMSE of the moving average vs the last value, and a regression test of whether recent arrivals help beyond the best simple baseline.
+
+## Data
+- The bundled `data/sample/demo_prices.csv` is **synthetic**, generated by `data/generate_demo.py` (seed 42). Parameters and justifications: `data/ASSUMPTIONS.md`. It plants two effects (a far hub whose premium swings, and an arrivals→price effect) purely to test the code. Do not cite it as real mandi data.
+- Real data: the official Government of India OGD / AGMARKNET catalogue (https://www.data.gov.in/catalog/current-daily-price-various-commodities-various-markets-mandi). Check licence/terms, units, and coverage before use; see `data/README.md`.
+- Licences: this repository's code is MIT; any downloaded data keeps its publisher's terms and is not redistributed here.
+
+## Installation
 ```bash
+git clone https://github.com/saluja-ji/mandimitra
+cd mandimitra
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-streamlit run app.py
 ```
 
-Run tests: `pytest -q`
+## Usage
+```bash
+streamlit run app.py                    # interactive app (upload a CSV or use the demo)
+python backtest.py --help               # command-line backtest, supports --csv, --sensitivity, --out
+python backtest.py --csv my_prices.csv --commodity Tomato --quantity-kg 2000 --transport 20 --spoilage 3
+python data/generate_demo.py            # regenerate the synthetic sample
+pytest -q                               # 37 tests
+```
 
-## CSV schema
-Required columns: `date`, `market`, `commodity`, `modal_price_rs_per_quintal`, `arrivals_tonnes`, `distance_km`. One row should represent one market/commodity/date. Prices are ₹/quintal; distance is km. Keep provenance and licence information for any uploaded real data.
+## Evaluation
+- **Done (synthetic data only):** decision backtest vs nearest / highest-price baselines, sensitivity grid, forecast RMSE vs last-value baseline, arrivals test checked against a planted effect and against a no-effect control.
+- **Not done:** any evaluation on real mandi data, or with farmers. **No real-world performance is claimed.**
+- **Pending:** run `backtest.py` on a real AGMARKNET extract for one crop and a bounded set of markets, and replace the synthetic numbers above.
 
-## Data honesty
-The bundled `data/sample/demo_prices.csv` is synthetic and exists only to make the demo run without internet. Do not cite it as actual mandi data or use it to decide a real sale. See `data/ASSUMPTIONS.md`. The official Government of India OGD catalogue for current daily mandi prices is at https://www.data.gov.in/catalog/current-daily-price-various-commodities-various-markets-mandi. Verify download format, update date, licence/terms, and data quality before using it.
+## Limitations
+- Synthetic demo data; no live price feed; no routed distances (optional straight-line × 1.3 approximation).
+- Transport ₹/km and loss % are user assumptions, not sourced rates; loss is linear in distance and ignores time, queues and quality grade.
+- No fees, loading/unloading, buyer demand or market access rules; modal prices are not guaranteed sale prices.
+- Backtests are conditional on the entered cost assumptions and score one-day-ahead prices only.
+- Moving average does not beat the last-value baseline on the demo data; the ranking can use either.
+- The bootstrap interval understates uncertainty on short or unrepresentative histories.
+- Arrivals are tested but not used in the ranking.
 
-## Method
-For each market, forecast price using the mean of the most recent N available observations. Estimate gross revenue from the quantity and forecast price, then subtract user-specified transport cost and a user-specified linear value-loss scenario. These assumptions are intentionally visible. Compare forecast performance chronologically against a last-observation baseline before making any accuracy claim.
-
-## Problem hypothesis
-Small-scale sellers of perishable produce may lack a simple, accessible way to compare expected net proceeds across nearby markets when price, distance, arrivals, and losses are considered together. This is a hypothesis to validate through interviews and literature; this prototype does not prove that market choice is a primary cause of post-harvest loss.
-
-## Known limitations
-- No live price feed or verified route API integration.
-- No quality grade, fees, loading/unloading, buyer demand, actual spoilage curve, or market access rules.
-- Historical modal prices are not guaranteed sale prices.
-- Synthetic data is not evidence of real-world impact.
-- Forecast is a baseline, not a sophisticated AI model; it must beat a simple baseline on held-out real data to justify further ML.
-- User must independently verify prices, travel, costs, and local conditions.
+## Team
+| Name | What they built |
+|---|---|
+| _fill in_ | |
+| _fill in_ | |
+| _fill in_ | |
 
 ## Research sources
-1. Ministry of Food Processing Industries / PIB, “Post Harvest Food Loss” (20 Dec 2022): https://www.pib.gov.in/Pressreleaseshare.aspx?PRID=1885038&lang=2&reg=48
+1. Ministry of Food Processing Industries / PIB, “Post Harvest Food Loss” (20 Dec 2022): https://www.pib.gov.in/Pressreleaseshare.aspx?PRID=1885038
 2. MoFPI / NABCONS, *Study to Determine Post Harvest Losses of Agri Produce in India* (2022): https://www.mofpi.gov.in/sites/default/files/study_report_of_post_harvest_losses_0.pdf
 3. WRI India, *Tomato Trail: Tracking Food Loss and Food Waste in Madhya Pradesh* (9 Sep 2024): https://wri-india.org/research/tomato-trail-tracking-food-loss-and-food-waste-madhya-pradesh
 4. Government of India Open Government Data, *Current Daily Price of Various Commodities from Various Markets (Mandi)*: https://www.data.gov.in/catalog/current-daily-price-various-commodities-various-markets-mandi
 5. e-NAM, official overview: https://www.enam.gov.in/web/
 
-## Open source
-MIT License. Review third-party data terms separately; this licence applies only to this project's code and original documentation.
+## Licence
+MIT. See LICENSE. See `docs/AI_USAGE.md` for the AI-use declaration.
 
 ## Hackathon checklist
-- [ ] Confirm problem through at least 2–3 stakeholder conversations or credible primary research.
-- [ ] Download and document a real data sample; keep original file metadata.
-- [ ] Compare forecast to baseline on a chronological holdout.
-- [ ] Test with a previously unseen market/date input.
-- [ ] Update AI usage declaration to match actual use.
-- [ ] Add team member names and real contribution/commit history; do not fabricate commits.
-- [ ] Push to a public GitHub repository and add required collaborators according to the organiser's actual team-size rules.
-- [ ] Record a demo video and create final slides.
+- [ ] 2–3 stakeholder conversations (commission agent, FPO member, farmer); notes in `docs/INTERVIEWS.md`
+- [ ] Download and document a real AGMARKNET sample; keep original file metadata
+- [ ] Run `backtest.py` on the real sample and update the README example and evaluation numbers
+- [ ] Test with a market/date input you did not prepare
+- [ ] Finish `docs/AI_USAGE.md` (per-member table)
+- [ ] Fill in the Team table; make sure all three members have real commits
+- [ ] Update the deck and brief so every claim matches this README
+- [ ] Demo video, final slides, v1.0 tag, `CONTRIBUTING.md`, 3–4 open issues
